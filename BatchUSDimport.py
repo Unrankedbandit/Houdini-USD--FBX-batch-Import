@@ -3,12 +3,25 @@ import hou
 import pdg
 import os
 
+# Global set to track processed files
+if not hasattr(hou.session, 'processed_usd_files'):
+    hou.session.processed_usd_files = set()
+
 def normalize_path(path):
     """Convert path to use forward slashes consistently"""
     return path.replace('\\', '/')
 
 def create_usd_import(file_path, work_item=None):
     """Create USD import node with the given file path"""
+    # Check if this file has already been processed
+    normalized_path = normalize_path(file_path)
+    if normalized_path in hou.session.processed_usd_files:
+        print(f"File already processed, skipping: {normalized_path}")
+        return None
+        
+    # Add to processed set
+    hou.session.processed_usd_files.add(normalized_path)
+    
     # Normalize the file path
     file_path = normalize_path(file_path)
     
@@ -55,8 +68,9 @@ def create_usd_import(file_path, work_item=None):
         print(f"Created USD import node: {usd_node_name} with file: {file_path}")
         return usd_node
         
-    except hou.OperationFailed:
-        raise RuntimeError("Failed to create USD import node. Make sure the USD plugin is properly installed.")
+    except hou.OperationFailed as e:
+        hou.session.processed_usd_files.remove(normalized_path)  # Remove from processed set if failed
+        raise RuntimeError(f"Failed to create USD import node: {str(e)}")
 
 def get_filepattern_directory():
     """Get the directory path from the connected File Pattern node"""
