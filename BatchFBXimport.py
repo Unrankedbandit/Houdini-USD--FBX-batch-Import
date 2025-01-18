@@ -1,36 +1,16 @@
+#v 2
 import hou
 import pdg
 import os
-
-# Global set to track processed files
-if not hasattr(hou.session, 'processed_fbx_files'):
-    hou.session.processed_fbx_files = set()
 
 def normalize_path(path):
     """Convert path to use forward slashes consistently"""
     return path.replace('\\', '/')
 
-def sanitize_node_name(name):
-    """Convert a string into a valid Houdini node name"""
-    # Replace spaces and special characters with underscores
-    sanitized = name.replace(' ', '_')
-    # Remove any characters that aren't alphanumeric or underscore
-    sanitized = ''.join(c for c in sanitized if c.isalnum() or c == '_')
-    # Ensure the name starts with a letter or underscore (Houdini requirement)
-    if sanitized and sanitized[0].isdigit():
-        sanitized = f"_{sanitized}"
-    return sanitized
-
 def create_fbx_import(file_path, work_item=None):
     """Create FBX import node with the given file path"""
-    # Check if this file has already been processed
-    normalized_path = normalize_path(file_path)
-    if normalized_path in hou.session.processed_fbx_files:
-        print(f"File already processed, skipping: {normalized_path}")
-        return None
-        
-    # Add to processed set
-    hou.session.processed_fbx_files.add(normalized_path)
+    # Normalize the file path
+    file_path = normalize_path(file_path)
     
     # Access or create the /obj network
     obj_net = hou.node("/obj")
@@ -47,9 +27,8 @@ def create_fbx_import(file_path, work_item=None):
         fbx_import_node.moveToGoodPosition()
 
     try:
-        # Extract the file name from the path and sanitize it
+        # Extract the file name from the path
         file_name = os.path.splitext(os.path.basename(file_path))[0]
-        file_name = sanitize_node_name(file_name)
         
         # Create a unique name for each FBX import node
         if work_item:
@@ -57,46 +36,27 @@ def create_fbx_import(file_path, work_item=None):
         else:
             fbx_node_name = f"fbx_import_{file_name}"
             
-        # Ensure the node name is valid
-        fbx_node_name = sanitize_node_name(fbx_node_name)
-            
         # Check if node already exists - if it does, don't recreate it
         existing_node = fbx_import_node.node(fbx_node_name)
         if existing_node:
             print(f"Node {fbx_node_name} already exists, skipping creation")
             return existing_node
 
-        # Create a File node for FBX import
+        # Create File node for FBX import
         fbx_node = fbx_import_node.createNode("file", fbx_node_name)
         
         # Verify the file exists before setting it
         if not os.path.exists(file_path):
             print(f"Warning: FBX file does not exist: {file_path}")
-            fbx_node.destroy()
-            hou.session.processed_fbx_files.remove(normalized_path)  # Remove from processed set if failed
-            return None
             
-        # Set the file path
         fbx_node.parm("file").set(file_path)
-        
-        # Set up FBX-specific parameters
-        if fbx_node.parm("missingframe"):
-            fbx_node.parm("missingframe").set(1)  # Error on missing frames
-            
-        # Set display and render flags
-        fbx_node.setDisplayFlag(True)
-        fbx_node.setRenderFlag(True)
-        
-        # Move to a good position in the network
         fbx_node.moveToGoodPosition()
         
         print(f"Created FBX import node: {fbx_node_name} with file: {file_path}")
         return fbx_node
         
-    except hou.OperationFailed as e:
-        print(f"Error creating node: {str(e)}")
-        hou.session.processed_fbx_files.remove(normalized_path)  # Remove from processed set if failed
-        raise RuntimeError(f"Failed to create FBX import node: {str(e)}")
+    except hou.OperationFailed:
+        raise RuntimeError("Failed to create FBX import node.")
 
 def get_filepattern_directory():
     """Get the directory path from the connected File Pattern node"""
@@ -172,75 +132,48 @@ def get_filepattern_directory():
 def process_fbx_files():
     """Main function to process FBX files"""
     try:
-        # Get the current work item
-        current_item = pdg.workItem()
+        # Check if we already have a container with nodes
+        container = hou.node("/obj/fbx_import")
+        if container and len(container.children()) > 0:
+            print("FBX nodes already exist, skipping import")
+            return
+            
+        # Get directory from File Pattern node
+        directory_path = get_filepattern_directory()
+        if not directory_path:
+            print("Could not get directory from File Pattern node")
+            return
+            
+        print(f"Processing directory: {directory_path}")
         
-        if current_item:
-            try:
-                # Create a unique key for this work item
-                work_item_key = f"processed_work_item_{current_item.index}"
-                
-                # Check if we've already processed this work item
-                if not hasattr(hou.session, work_item_key):
-                    # Get the file path from the work item
-                    fbx_file = normalize_path(current_item.stringAttribValue("file"))
-                    if not fbx_file:
-                        raise ValueError("'file' attribute is empty")
-                    
-                    # If the path is not absolute, combine it with the File Pattern directory
-                    if not os.path.isabs(fbx_file):
-                        filepattern_dir = get_filepattern_directory()
-                        if filepattern_dir:
-                            fbx_file = os.path.join(filepattern_dir, fbx_file)
-                            fbx_file = normalize_path(fbx_file)
-                        
-                    print(f"\nProcessing Work Item {current_item.index}")
-                    print(f"File: {fbx_file}")
-                    print(f"ID: {current_item.id}")
-                    
-                    # Create a FBX import node for this work item
-                    create_fbx_import(fbx_file, current_item)
-                    
-                    # Mark this work item as processed
-                    setattr(hou.session, work_item_key, True)
-                else:
-                    print(f"Work item {current_item.index} has already been processed, skipping")
-                
-            except Exception as e:
-                print(f"Error processing work item {current_item.index}: {str(e)}")
-                
-        else:
-            # If running outside PDG, use the File Pattern directory if available
-            directory_path = get_filepattern_directory()
-            if not directory_path:
-                print("Warning: Could not get directory from File Pattern node")
-                directory_path = normalize_path(hou.expandString("$HIP"))
-                print("Falling back to HIP directory")
+        # Debug: List all files in directory
+        try:
+            all_files = os.listdir(directory_path)
+            print(f"\nAll files in directory:")
+            for f in all_files:
+                print(f"- {f}")
             
-            print(f"Using directory: {directory_path}")
-            
-            if not os.path.exists(directory_path):
-                print(f"Error: Directory does not exist: {directory_path}")
-                return
-                
-            # Look for any FBX files in the directory
-            fbx_files = [f for f in os.listdir(directory_path) if f.endswith('.fbx')]
+            # Find FBX files
+            fbx_files = [f for f in all_files if f.lower().endswith('.fbx')]
             
             if not fbx_files:
-                print(f"No FBX files found in {directory_path}")
+                print(f"\nNo FBX files found in {directory_path}")
+                print("Note: FBX extension check is case-sensitive, checking for '.fbx'")
                 return
                 
-            print(f"Found {len(fbx_files)} FBX files")
-            for fbx_file in fbx_files:
-                file_path = normalize_path(os.path.join(directory_path, fbx_file))
+            print(f"\nFound {len(fbx_files)} FBX files:")
+            for fbx_file in sorted(fbx_files):
+                file_path = os.path.join(directory_path, fbx_file)
                 print(f"Processing FBX file: {file_path}")
                 create_fbx_import(file_path)
 
-    except ImportError as e:
-        print("Error importing modules:", str(e))
+        except Exception as e:
+            print(f"Error accessing directory: {str(e)}")
+            import traceback
+            traceback.print_exc()
+
     except Exception as e:
-        print("Error during execution:", str(e))
-        raise  # Re-raise the exception to see the full stack trace
+        print(f"Error processing files: {str(e)}")
 
 # Execute the main function
-process_fbx_files() 
+process_fbx_files()
