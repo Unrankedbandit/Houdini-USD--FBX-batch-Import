@@ -95,7 +95,8 @@ def process_usd_files():
             print(f"Directory does not exist: {dir_path}")
             return
             
-        usd_files = [f for f in os.listdir(dir_path) if f.endswith(('.usd', '.usda', '.usdc'))]
+        # Updated to include .usdz files
+        usd_files = [f for f in os.listdir(dir_path) if f.endswith(('.usd', '.usda', '.usdc', '.usdz'))]
         if not usd_files:
             print(f"No USD files found in {dir_path}")
             return
