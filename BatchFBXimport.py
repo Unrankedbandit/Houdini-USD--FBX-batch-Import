@@ -7,56 +7,76 @@ def normalize_path(path):
     """Convert path to use forward slashes consistently"""
     return path.replace('\\', '/')
 
+def sanitize_node_name(name):
+    """Convert a string into a valid Houdini node name"""
+    # Replace spaces and special characters with underscores
+    sanitized = name.replace(' ', '_')
+    # Remove any non-alphanumeric characters except underscores
+    sanitized = ''.join(c for c in sanitized if c.isalnum() or c == '_')
+    # Ensure name starts with a letter or underscore
+    if sanitized and sanitized[0].isdigit():
+        sanitized = f"_{sanitized}"
+    return sanitized
+
 def create_fbx_import(file_path, work_item=None):
     """Create FBX import node with the given file path"""
-    # Normalize the file path
-    file_path = normalize_path(file_path)
-    
-    # Access or create the /obj network
-    obj_net = hou.node("/obj")
-    if obj_net is None:
-        raise RuntimeError("Cannot access /obj network")
-        
-    # Create or get the geometry container
-    geo_name = "fbx_import"
-    fbx_import_node = obj_net.node(geo_name)
-    if fbx_import_node is None:
-        fbx_import_node = obj_net.createNode(
-            "geo", node_name=geo_name, run_init_scripts=False
-        )
-        fbx_import_node.moveToGoodPosition()
-
     try:
-        # Extract the file name from the path
+        # Normalize the file path
+        file_path = normalize_path(file_path)
+        
+        # Verify the file exists before proceeding
+        if not os.path.exists(file_path):
+            print(f"Warning: Skipping file - Does not exist: {file_path}")
+            return None
+            
+        # Access or create the /obj network
+        obj_net = hou.node("/obj")
+        if obj_net is None:
+            print(f"Warning: Skipping file - Cannot access /obj network: {file_path}")
+            return None
+            
+        # Create or get the geometry container
+        geo_name = "fbx_import"
+        fbx_import_node = obj_net.node(geo_name)
+        if fbx_import_node is None:
+            try:
+                fbx_import_node = obj_net.createNode("geo", node_name=geo_name, run_init_scripts=False)
+                fbx_import_node.moveToGoodPosition()
+            except Exception as e:
+                print(f"Warning: Skipping file - Failed to create container node: {str(e)}")
+                return None
+
+        # Extract and sanitize the file name
         file_name = os.path.splitext(os.path.basename(file_path))[0]
+        sanitized_name = sanitize_node_name(file_name)
         
         # Create a unique name for each FBX import node
         if work_item:
-            fbx_node_name = f"fbx_import_{file_name}_{work_item.index}"
+            fbx_node_name = f"fbx_import_{sanitized_name}_{work_item.index}"
         else:
-            fbx_node_name = f"fbx_import_{file_name}"
+            fbx_node_name = f"fbx_import_{sanitized_name}"
             
-        # Check if node already exists - if it does, don't recreate it
-        existing_node = fbx_import_node.node(fbx_node_name)
-        if existing_node:
-            print(f"Node {fbx_node_name} already exists, skipping creation")
-            return existing_node
+        # Check if node already exists
+        if fbx_import_node.node(fbx_node_name):
+            print(f"Info: Skipping file - Node already exists: {fbx_node_name}")
+            return None
 
-        # Create File node for FBX import
-        fbx_node = fbx_import_node.createNode("file", fbx_node_name)
-        
-        # Verify the file exists before setting it
-        if not os.path.exists(file_path):
-            print(f"Warning: FBX file does not exist: {file_path}")
+        try:
+            # Create File node for FBX import
+            fbx_node = fbx_import_node.createNode("file", fbx_node_name)
+            fbx_node.parm("file").set(file_path)
+            fbx_node.moveToGoodPosition()
             
-        fbx_node.parm("file").set(file_path)
-        fbx_node.moveToGoodPosition()
-        
-        print(f"Created FBX import node: {fbx_node_name} with file: {file_path}")
-        return fbx_node
-        
-    except hou.OperationFailed:
-        raise RuntimeError("Failed to create FBX import node.")
+            print(f"Success: Created FBX import node: {fbx_node_name} for file: {file_path}")
+            return fbx_node
+            
+        except hou.OperationFailed as e:
+            print(f"Warning: Skipping file - Failed to create node '{fbx_node_name}': {str(e)}")
+            return None
+            
+    except Exception as e:
+        print(f"Warning: Skipping file - Unexpected error processing '{file_path}': {str(e)}")
+        return None
 
 def get_filepattern_directory():
     """Get the directory path from the connected File Pattern node"""
@@ -135,37 +155,48 @@ def process_fbx_files():
         # Check if we already have a container with nodes
         container = hou.node("/obj/fbx_import")
         if container and len(container.children()) > 0:
-            print("FBX nodes already exist, skipping import")
+            print("Info: FBX nodes already exist, skipping import")
             return
             
         # Get directory from File Pattern node
         directory_path = get_filepattern_directory()
         if not directory_path:
-            print("Could not get directory from File Pattern node")
+            print("Error: Could not get directory from File Pattern node")
             return
             
-        print(f"Processing directory: {directory_path}")
+        print(f"Info: Processing directory: {directory_path}")
         
         # Debug: List all files in directory
         try:
             all_files = os.listdir(directory_path)
-            print(f"\nAll files in directory:")
-            for f in all_files:
-                print(f"- {f}")
-            
-            # Find FBX files
             fbx_files = [f for f in all_files if f.lower().endswith('.fbx')]
             
             if not fbx_files:
-                print(f"\nNo FBX files found in {directory_path}")
-                print("Note: FBX extension check is case-sensitive, checking for '.fbx'")
+                print(f"Info: No FBX files found in {directory_path}")
                 return
                 
-            print(f"\nFound {len(fbx_files)} FBX files:")
+            print(f"\nFound {len(fbx_files)} FBX files to process")
+            
+            # Track statistics
+            processed = 0
+            skipped = 0
+            failed = 0
+            
+            # Process each file
             for fbx_file in sorted(fbx_files):
                 file_path = os.path.join(directory_path, fbx_file)
-                print(f"Processing FBX file: {file_path}")
-                create_fbx_import(file_path)
+                result = create_fbx_import(file_path)
+                
+                if result:
+                    processed += 1
+                else:
+                    skipped += 1
+                    
+            # Print summary
+            print(f"\nImport Summary:")
+            print(f"- Successfully processed: {processed}")
+            print(f"- Skipped/Failed: {skipped}")
+            print(f"- Total files found: {len(fbx_files)}")
 
         except Exception as e:
             print(f"Error accessing directory: {str(e)}")
