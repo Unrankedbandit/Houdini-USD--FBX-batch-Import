@@ -119,3 +119,9 @@ The scripts include comprehensive error handling for:
 - Work items are tracked to prevent duplicate processing
 - The scripts can run standalone in Houdini (outside PDG)
 - FBX files with spaces or special characters in their names are automatically sanitized
+
+## Support
+
+If you encounter any issues or have questions, please:
+1. Check the [Issues](https://github.com/unrankedbandit/obj_fbx_converter/issues) page
+2. Create a new issue with detailed information about your problem
